@@ -664,7 +664,7 @@ impl MpdClient for Client<'_> {
     }
 
     fn albumart(&mut self, path: &str) -> MpdResult<Option<Vec<u8>>> {
-        self.send_albumart(path).and_then(|cmd| self.read_bin(&cmd))
+        self.send_read_picture(path).and_then(|cmd| self.read_bin(&cmd))
     }
 
     // Stored playlists
