@@ -3,27 +3,21 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, ensure};
 use crossterm::style::Color as CrosstermColor;
 use itertools::Itertools;
-use ratatui::style::Color as RatatuiColor;
+use ratatui::{prelude::IntoCrossterm, style::Color as RatatuiColor};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{ConfigColor, defaults};
+use super::ConfigColor;
 use crate::shared::ext::vec::VecExt;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct CavaThemeFile {
-    #[serde(default = "defaults::default_bar_symbols")]
     pub bar_symbols: Vec<char>,
-    #[serde(default = "defaults::default_inverted_bar_symbols")]
     pub inverted_bar_symbols: Vec<char>,
-    #[serde(default)]
     pub bg_color: Option<String>,
-    #[serde(default)]
     pub bar_color: CavaColorFile,
-    #[serde(default = "defaults::u16::<1>")]
     pub bar_spacing: u16,
-    #[serde(default = "defaults::u16::<1>")]
     pub bar_width: u16,
-    #[serde(default)]
     pub orientation: Orientation,
 }
 
@@ -134,17 +128,16 @@ impl CavaThemeFile {
                 })
                 .transpose()?
                 .or(default_bg_color)
-                .map_or(CrosstermColor::Reset, CrosstermColor::from),
+                .map_or(CrosstermColor::Reset, |c| c.into_crossterm()),
             bar_color: match self.bar_color {
                 CavaColorFile::Single(c) => CavaColor::Single(
-                    RatatuiColor::from(ConfigColor::try_from(c.as_bytes())?).into(),
+                    RatatuiColor::from(ConfigColor::try_from(c.as_bytes())?).into_crossterm(),
                 ),
                 CavaColorFile::Rows(cs) => CavaColor::Rows(
                     cs.into_iter()
                         .map(|c| -> Result<CrosstermColor> {
-                            Ok(CrosstermColor::from(RatatuiColor::from(ConfigColor::try_from(
-                                c.as_bytes(),
-                            )?)))
+                            Ok(RatatuiColor::from(ConfigColor::try_from(c.as_bytes())?)
+                                .into_crossterm())
                         })
                         .try_collect()?,
                 ),
@@ -184,8 +177,7 @@ impl CavaThemeFile {
                                     Ok((k, (r, g, b)))
                                 }
                                 result => Err(anyhow::anyhow!(
-                                    "Gradient colors must be hex or RGB colors, got {:?}",
-                                    result
+                                    "Gradient colors must be hex or RGB colors, got {result:?}"
                                 )),
                             }
                         })

@@ -6,21 +6,34 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ipc::ipc_stream::IpcStream,
-    lrc::{LrcIndex, LrcIndexEntry},
+    lrc::LrcIndex,
     mouse_event::MouseEvent,
     mpd_query::{MpdCommand, MpdQuery, MpdQueryResult, MpdQuerySync},
-    ytdlp::{SearchItem, YtDlpHostKind},
 };
 use crate::{
     config::{
         Config,
         Size,
         cli::{Command, RemoteCommandQuery},
+        keys::Key,
         tabs::PaneType,
         theme::UiConfig,
     },
     mpd::{QueuePosition, commands::IdleEvent},
-    ui::UiAppEvent,
+    shared::{
+        keys::ActionEvent,
+        lrc::LrcMetadata,
+        ytdlp::{
+            DownloadId,
+            YtDlpDownloadError,
+            YtDlpDownloadResult,
+            YtDlpHost,
+            YtDlpItem,
+            YtDlpPlaylist,
+            YtDlpSearchItem,
+        },
+    },
+    ui::{UiAppEvent, image::facade::EncodeData},
 };
 
 #[derive(Debug)]
@@ -31,7 +44,6 @@ pub(crate) enum ClientRequest {
     Command(MpdCommand),
 }
 
-#[derive(Debug)]
 #[allow(unused)]
 pub(crate) enum WorkRequest {
     IndexLyrics {
@@ -43,21 +55,52 @@ pub(crate) enum WorkRequest {
     },
     SearchYt {
         query: String,
-        kind: YtDlpHostKind,
+        kind: YtDlpHost,
         limit: usize,
         interactive: bool,
         position: Option<QueuePosition>,
     },
+    YtDlpDownload {
+        id: DownloadId,
+        url: YtDlpItem,
+    },
+    YtDlpResolvePlaylist {
+        playlist: YtDlpPlaylist,
+    },
     Command(Command),
+    ResizeImage(Box<dyn FnOnce() -> Result<EncodeData> + Send + Sync>),
 }
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // the instances are short lived events, its fine.
 pub(crate) enum WorkDone {
-    LyricsIndexed { index: LrcIndex },
-    SingleLrcIndexed { lrc_entry: Option<LrcIndexEntry> },
-    MpdCommandFinished { id: &'static str, target: Option<PaneType>, data: MpdQueryResult },
-    SearchYtResults { items: Vec<SearchItem>, position: Option<QueuePosition> },
+    LyricsIndexed {
+        index: LrcIndex,
+    },
+    SingleLrcIndexed {
+        path: PathBuf,
+        metadata: Option<LrcMetadata>,
+    },
+    MpdCommandFinished {
+        id: &'static str,
+        target: Option<PaneType>,
+        data: MpdQueryResult,
+    },
+    ImageResized {
+        data: Result<EncodeData>,
+    },
+    SearchYtResults {
+        items: Vec<YtDlpSearchItem>,
+        position: Option<QueuePosition>,
+        interactive: bool,
+    },
+    YtDlpPlaylistResolved {
+        urls: Vec<YtDlpItem>,
+    },
+    YtDlpDownloaded {
+        id: DownloadId,
+        result: Result<YtDlpDownloadResult, YtDlpDownloadError>,
+    },
     None,
 }
 
@@ -68,6 +111,9 @@ pub(crate) enum WorkDone {
 pub(crate) enum AppEvent {
     UserKeyInput(KeyEvent),
     UserMouseInput(MouseEvent),
+    KeyTimeout,
+    ActionResolved(ActionEvent),
+    InsertModeFlush((Option<ActionEvent>, Vec<Key>)),
     Status(String, Level, Duration),
     InfoModal {
         message: Vec<String>,

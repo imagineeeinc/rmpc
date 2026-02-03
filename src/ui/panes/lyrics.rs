@@ -11,7 +11,7 @@ use crate::{
     ctx::Ctx,
     shared::{
         ext::duration::DurationExt,
-        key_event::KeyEvent,
+        keys::ActionEvent,
         lrc::Lrc,
         macros::status_error,
         mpd_query::run_status_update,
@@ -29,6 +29,16 @@ pub struct LyricsPane {
 impl LyricsPane {
     pub fn new(_ctx: &Ctx) -> Self {
         Self { current_lyrics: None, initialized: false, last_requested_line_idx: 0 }
+    }
+
+    fn update_lyrics(&mut self, ctx: &Ctx) -> Result<()> {
+        self.current_lyrics = None;
+
+        let lrc = ctx.find_lrc()?;
+        let Some((_, lrc)) = lrc else { return Ok(()) };
+
+        self.current_lyrics = Some(lrc);
+        Ok(())
     }
 }
 
@@ -50,7 +60,7 @@ impl Pane for LyricsPane {
 
         let rows = area.height;
         let areas = Layout::vertical((0..rows).map(|_| Constraint::Length(1))).split(area);
-        let middle_row = rows / 2;
+        let middle_row = rows.saturating_sub(1) / 2;
 
         let default_style = Style::default().fg(ctx.config.theme.text_color.unwrap_or_default());
 
@@ -62,7 +72,6 @@ impl Pane for LyricsPane {
 
         let timestamp = ctx.config.theme.lyrics.timestamp;
 
-        let mut current_area = middle_row as usize;
         let Some(current_line) = lrc.lines.get(current_line_idx) else {
             return Ok(());
         };
@@ -71,7 +80,15 @@ impl Pane for LyricsPane {
         } else {
             &current_line.content
         };
-        for l in textwrap::wrap(formatted_line, area.width as usize) {
+
+        let wrapped_lines = textwrap::wrap(formatted_line, area.width as usize);
+        let wrapped_lines_length = wrapped_lines.len();
+
+        let active_lyric_start_row =
+            (middle_row as usize).saturating_sub(wrapped_lines_length.saturating_sub(1));
+        let mut current_area = active_lyric_start_row;
+
+        for l in wrapped_lines {
             let Some(area) = areas.get(current_area) else {
                 break;
             };
@@ -81,7 +98,7 @@ impl Pane for LyricsPane {
         }
 
         let mut before_lyrics_cursor = current_line_idx;
-        let mut before_area_cursor = middle_row as usize;
+        let mut before_area_cursor = active_lyric_start_row as usize;
         while before_lyrics_cursor > 0 && before_area_cursor > 0 {
             before_lyrics_cursor -= 1;
             let Some(line) = lrc.lines.get(before_lyrics_cursor) else {
@@ -145,14 +162,8 @@ impl Pane for LyricsPane {
 
     fn before_show(&mut self, ctx: &Ctx) -> Result<()> {
         if !self.initialized {
-            match ctx.find_lrc() {
-                Ok(lrc) => {
-                    self.current_lyrics = lrc;
-                }
-                Err(err) => {
-                    status_error!("Failed to load lyrics file: '{err}'");
-                    self.current_lyrics = None;
-                }
+            if let Err(err) = self.update_lyrics(ctx) {
+                status_error!("Failed to load lyrics file: '{err}'");
             }
             self.last_requested_line_idx = 0;
             self.initialized = true;
@@ -163,30 +174,11 @@ impl Pane for LyricsPane {
 
     fn on_event(&mut self, event: &mut UiEvent, _is_visible: bool, ctx: &Ctx) -> Result<()> {
         match event {
-            UiEvent::SongChanged | UiEvent::Reconnected => {
-                match ctx.find_lrc() {
-                    Ok(lrc) => {
-                        self.current_lyrics = lrc;
-                        ctx.render()?;
-                    }
-                    Err(err) => {
-                        self.current_lyrics = None;
-                        status_error!("Failed to load lyrics file: '{err}'");
-                    }
+            UiEvent::SongChanged | UiEvent::Reconnected | UiEvent::LyricsIndexed => {
+                if let Err(err) = self.update_lyrics(ctx) {
+                    status_error!("Failed to load lyrics file: '{err}'");
                 }
-                self.last_requested_line_idx = 0;
-            }
-            UiEvent::LyricsIndexed if self.current_lyrics.is_none() => {
-                match ctx.find_lrc() {
-                    Ok(lrc) => {
-                        self.current_lyrics = lrc;
-                        ctx.render()?;
-                    }
-                    Err(err) => {
-                        self.current_lyrics = None;
-                        status_error!("Failed to load lyrics file: '{err}'");
-                    }
-                }
+                ctx.render()?;
                 self.last_requested_line_idx = 0;
             }
             _ => {}
@@ -194,7 +186,7 @@ impl Pane for LyricsPane {
         Ok(())
     }
 
-    fn handle_action(&mut self, _event: &mut KeyEvent, _ctx: &mut Ctx) -> Result<()> {
+    fn handle_action(&mut self, _event: &mut ActionEvent, _ctx: &mut Ctx) -> Result<()> {
         Ok(())
     }
 }

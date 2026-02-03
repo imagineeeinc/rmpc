@@ -60,6 +60,15 @@ pub enum ValueChange {
     Set(u32),
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub enum AlbumArtOrder {
+    #[default]
+    EmbeddedFirst,
+    FileFirst,
+    EmbeddedOnly,
+    FileOnly,
+}
+
 impl FromStr for ValueChange {
     type Err = anyhow::Error;
 
@@ -124,6 +133,8 @@ pub trait MpdCommand {
     fn send_list_mounts(&mut self) -> MpdResult<()>;
     fn send_add(&mut self, path: &str, position: Option<QueuePosition>) -> MpdResult<()>;
     fn send_clear(&mut self) -> MpdResult<()>;
+    fn send_swap_position(&mut self, song1: usize, song2: usize) -> MpdResult<()>;
+    fn send_swap_id(&mut self, id1: u32, id2: u32) -> MpdResult<()>;
     fn send_delete_id(&mut self, id: u32) -> MpdResult<()>;
     fn send_delete_from_queue(&mut self, songs: SingleOrRange) -> MpdResult<()>;
     fn send_playlist_info(&mut self) -> MpdResult<()>;
@@ -222,7 +233,7 @@ pub trait MpdClient: Sized {
     fn update(&mut self, path: Option<&str>) -> MpdResult<Update>;
     fn rescan(&mut self, path: Option<&str>) -> MpdResult<Update>;
     fn idle(&mut self, subsystem: Option<IdleEvent>) -> MpdResult<Vec<IdleEvent>>;
-    fn enter_idle(&mut self) -> MpdResult<()>;
+    fn enter_idle(&mut self, subsystem: Option<IdleEvent>) -> MpdResult<()>;
     fn noidle(&mut self) -> MpdResult<()>;
 
     fn get_volume(&mut self) -> MpdResult<Volume>;
@@ -254,6 +265,10 @@ pub trait MpdClient: Sized {
     // Current queue
     fn add(&mut self, path: &str, position: Option<QueuePosition>) -> MpdResult<()>;
     fn clear(&mut self) -> MpdResult<()>;
+    // Swaps the songs at position SONG1 and SONG2 in the current playlist. Zero
+    // based index.
+    fn swap_position(&mut self, song1: usize, song2: usize) -> MpdResult<()>;
+    fn swap_id(&mut self, id1: u32, id2: u32) -> MpdResult<()>;
     fn delete_id(&mut self, id: u32) -> MpdResult<()>;
     fn delete_from_queue(&mut self, songs: SingleOrRange) -> MpdResult<()>;
     fn playlist_info(&mut self) -> MpdResult<Option<Vec<Song>>>;
@@ -307,11 +322,7 @@ pub trait MpdClient: Sized {
         target_position: Option<usize>,
     ) -> MpdResult<()>;
     fn save_queue_as_playlist(&mut self, name: &str, mode: Option<SaveMode>) -> MpdResult<()>;
-    /// This function first invokes [`Self::albumart`].
-    /// If no album art is found it invokes [`Self::read_picture`].
-    /// If no art is still found, but no errors were encountered, None is
-    /// returned.
-    fn find_album_art(&mut self, path: &str) -> MpdResult<Option<Vec<u8>>>;
+    fn find_album_art(&mut self, path: &str, order: AlbumArtOrder) -> MpdResult<Option<Vec<u8>>>;
     // Outputs
     fn outputs(&mut self) -> MpdResult<Outputs>;
     fn toggle_output(&mut self, id: u32) -> MpdResult<()>;
@@ -413,8 +424,8 @@ impl MpdClient for Client<'_> {
         self.send_idle(subsystem).and_then(|()| self.read_response())
     }
 
-    fn enter_idle(&mut self) -> MpdResult<()> {
-        self.send_idle(None)
+    fn enter_idle(&mut self, subsystem: Option<IdleEvent>) -> MpdResult<()> {
+        self.send_idle(subsystem)
     }
 
     fn noidle(&mut self) -> MpdResult<()> {
@@ -522,6 +533,14 @@ impl MpdClient for Client<'_> {
 
     fn clear(&mut self) -> MpdResult<()> {
         self.send_clear().and_then(|()| self.read_ok())
+    }
+
+    fn swap_position(&mut self, song1: usize, song2: usize) -> MpdResult<()> {
+        self.send_swap_position(song1, song2).and_then(|()| self.read_ok())
+    }
+
+    fn swap_id(&mut self, id1: u32, id2: u32) -> MpdResult<()> {
+        self.send_swap_id(id1, id2).and_then(|()| self.read_ok())
     }
 
     fn delete_id(&mut self, id: u32) -> MpdResult<()> {
@@ -727,12 +746,26 @@ impl MpdClient for Client<'_> {
         self.send_save_queue_as_playlist(name, mode).and_then(|()| self.read_ok())
     }
 
-    fn find_album_art(&mut self, path: &str) -> MpdResult<Option<Vec<u8>>> {
+    fn find_album_art(&mut self, path: &str, order: AlbumArtOrder) -> MpdResult<Option<Vec<u8>>> {
         // path is already escaped in albumart() and read_picture()
-        match self.albumart(path) {
+        let first_result = match order {
+            AlbumArtOrder::FileFirst | AlbumArtOrder::FileOnly => self.albumart(path),
+            AlbumArtOrder::EmbeddedFirst | AlbumArtOrder::EmbeddedOnly => self.read_picture(path),
+        };
+        match first_result {
             Ok(Some(v)) => Ok(Some(v)),
             Ok(None) | Err(MpdError::Mpd(MpdFailureResponse { code: ErrorCode::NoExist, .. })) => {
-                match self.read_picture(path) {
+                let second_result = match order {
+                    AlbumArtOrder::FileFirst => self.read_picture(path),
+                    AlbumArtOrder::EmbeddedFirst => self.albumart(path),
+                    AlbumArtOrder::EmbeddedOnly | AlbumArtOrder::FileOnly => {
+                        log::debug!(
+                            "No album art found and no secondary method configured, falling back to placeholder image"
+                        );
+                        Ok(None)
+                    }
+                };
+                match second_result {
                     Ok(Some(p)) => Ok(Some(p)),
                     Ok(None) => {
                         log::debug!("No album art found, falling back to placeholder image");
@@ -1074,6 +1107,14 @@ impl<T: SocketClient> MpdCommand for T {
 
     fn send_clear(&mut self) -> MpdResult<()> {
         self.execute("clear")
+    }
+
+    fn send_swap_position(&mut self, song1: usize, song2: usize) -> MpdResult<()> {
+        self.execute(&format!("swap {song1} {song2}"))
+    }
+
+    fn send_swap_id(&mut self, id1: u32, id2: u32) -> MpdResult<()> {
+        self.execute(&format!("swapid {id1} {id2}"))
     }
 
     fn send_delete_id(&mut self, id: u32) -> MpdResult<()> {
@@ -1528,14 +1569,17 @@ impl Tag {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum FilterKind {
     Exact,
+    NotExact,
     StartsWith,
     #[default]
     Contains,
     Regex,
+    NotRegex,
+    CustomQuery(String),
 }
 
 #[derive(Debug)]
@@ -1557,6 +1601,8 @@ impl<'value> Filter<'value> {
         Self { tag: tag.into(), value: value.into(), kind: FilterKind::Exact }
     }
 
+    /// The `tag` and `value` parameters are ignored when the kind is set to
+    /// `Custom`.
     pub fn new_with_kind<T: Into<Tag>, V: Into<Cow<'value, str>>>(
         tag: T,
         value: V,
@@ -1565,15 +1611,20 @@ impl<'value> Filter<'value> {
         Self { tag: tag.into(), value: value.into(), kind }
     }
 
+    /// The `tag` and `value` parameters are ignored when the kind is set to
+    /// `Custom`.
     pub fn with_type(mut self, t: FilterKind) -> Self {
         self.kind = t;
         self
     }
 
     pub fn to_query_str(&self) -> String {
-        match self.kind {
+        match &self.kind {
             FilterKind::Exact => {
                 format!("{} == '{}'", self.tag.as_str(), self.value.escape_filter())
+            }
+            FilterKind::NotExact => {
+                format!("{} != '{}'", self.tag.as_str(), self.value.escape_filter())
             }
             FilterKind::StartsWith => {
                 format!("{} starts_with '{}'", self.tag.as_str(), self.value.escape_filter())
@@ -1584,6 +1635,10 @@ impl<'value> Filter<'value> {
             FilterKind::Regex => {
                 format!("{} =~ '{}'", self.tag.as_str(), self.value.escape_filter())
             }
+            FilterKind::NotRegex => {
+                format!("{} !~ '{}'", self.tag.as_str(), self.value.escape_filter())
+            }
+            FilterKind::CustomQuery(query) => query.escape_filter(),
         }
     }
 }

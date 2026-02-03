@@ -16,6 +16,9 @@ pub struct Args {
     pub config: Option<PathBuf>,
     #[arg(short, long, value_hint = ValueHint::AnyPath, value_name = "FILE")]
     pub theme: Option<PathBuf>,
+    #[arg(long, exclusive = true)]
+    /// Skip user config and start with defaults, must be the only argument
+    pub clean: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
     #[arg(short, long)]
@@ -248,13 +251,25 @@ pub enum Command {
         #[arg(short = 'i', long = "interactive")]
         interactive: bool,
         /// How many results to show with --list
-        #[arg(long = "limit", default_value_t = 5, requires("interactive"))]
+        #[arg(short = 'l', long = "limit", default_value_t = 5, requires("interactive"))]
         limit: usize,
         /// If provided, queue the new item at this position instead of the end
         /// of the queue. Allowed positions are <number> (absolute) and
         /// +<number> or -<number> (relative)
         #[arg(short, long, allow_negative_numbers = true)]
         position: Option<QueuePosition>,
+    },
+    /// Save the current queue as a playlist
+    Save {
+        /// Playlist name to create
+        #[arg(required = true)]
+        name: String,
+    },
+    /// Loads a playlist into the current queue
+    Load {
+        /// Name of the playlist to load
+        #[arg(required = true)]
+        names: Vec<String>,
     },
     /// List MPD outputs
     Outputs,
@@ -459,28 +474,6 @@ pub enum OnOffOneshot {
 }
 
 impl Args {
-    #[must_use]
-    pub fn config_path(&self) -> PathBuf {
-        if let Some(path) = &self.config {
-            return path.to_owned();
-        }
-        let mut path = PathBuf::new();
-        if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-            path.push(dir);
-        } else if let Ok(home) = std::env::var("HOME") {
-            path.push(home);
-            path.push(".config");
-        } else {
-            return path;
-        }
-        path.push(env!("CARGO_CRATE_NAME"));
-        #[cfg(debug_assertions)]
-        path.push("config.debug.ron");
-        #[cfg(not(debug_assertions))]
-        path.push("config.ron");
-        path
-    }
-
     /// Split a shell-like command line into tokens (argv).
     ///
     /// Supports single `'...'` and double `"..."` quotes and backslash escapes.

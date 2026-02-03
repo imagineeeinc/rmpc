@@ -7,7 +7,7 @@ use crate::{
     config::{album_art::ImageMethod, tabs::PaneType},
     ctx::Ctx,
     mpd::mpd_client::MpdClient,
-    shared::key_event::KeyEvent,
+    shared::keys::ActionEvent,
     ui::{UiEvent, image::facade::AlbumArtFacade},
 };
 
@@ -22,11 +22,7 @@ const ALBUM_ART: &str = "album_art";
 
 impl AlbumArtPane {
     pub fn new(ctx: &Ctx) -> Self {
-        Self {
-            album_art: AlbumArtFacade::new(&ctx.config),
-            is_modal_open: false,
-            fetch_needed: false,
-        }
+        Self { album_art: AlbumArtFacade::new(ctx), is_modal_open: false, fetch_needed: false }
     }
 
     /// returns none if album art is supposed to be hidden
@@ -45,10 +41,11 @@ impl AlbumArtPane {
         }
 
         let song_uri = song_uri.to_owned();
+        let order = ctx.config.album_art.order;
         ctx.query().id(ALBUM_ART).replace_id(ALBUM_ART).target(PaneType::AlbumArt).query(move |client| {
             let start = std::time::Instant::now();
             log::debug!(file = song_uri.as_str(); "Searching for album art");
-            let result = client.find_album_art(&song_uri)?;
+            let result = client.find_album_art(&song_uri, order)?;
             log::debug!(elapsed:? = start.elapsed(), size = result.as_ref().map(|v|v.len()); "Found album art");
 
             Ok(MpdQueryResult::AlbumArt(result))
@@ -69,25 +66,25 @@ impl Pane for AlbumArtPane {
         Ok(())
     }
 
-    fn handle_action(&mut self, _event: &mut KeyEvent, _ctx: &mut Ctx) -> Result<()> {
+    fn handle_action(&mut self, _event: &mut ActionEvent, _ctx: &mut Ctx) -> Result<()> {
         Ok(())
     }
 
-    fn on_hide(&mut self, _ctx: &Ctx) -> Result<()> {
-        self.album_art.hide()
+    fn on_hide(&mut self, ctx: &Ctx) -> Result<()> {
+        self.album_art.hide(ctx)
     }
 
-    fn resize(&mut self, area: Rect, _ctx: &Ctx) -> Result<()> {
+    fn resize(&mut self, area: Rect, ctx: &Ctx) -> Result<()> {
         if self.is_modal_open {
             return Ok(());
         }
         self.album_art.set_size(area);
-        self.album_art.show_current()
+        self.album_art.show_current(ctx)
     }
 
     fn before_show(&mut self, ctx: &Ctx) -> Result<()> {
         if AlbumArtPane::fetch_album_art(ctx).is_none() {
-            self.album_art.show_default()?;
+            self.album_art.show_default(ctx)?;
         }
         Ok(())
     }
@@ -97,17 +94,17 @@ impl Pane for AlbumArtPane {
         id: &'static str,
         data: MpdQueryResult,
         is_visible: bool,
-        _ctx: &Ctx,
+        ctx: &Ctx,
     ) -> Result<()> {
         if !is_visible || self.is_modal_open {
             return Ok(());
         }
         match (id, data) {
             (ALBUM_ART, MpdQueryResult::AlbumArt(Some(data))) => {
-                self.album_art.show(data)?;
+                self.album_art.show(data, ctx)?;
             }
             (ALBUM_ART, MpdQueryResult::AlbumArt(None)) => {
-                self.album_art.show_default()?;
+                self.album_art.show_default(ctx)?;
             }
             _ => {}
         }
@@ -125,12 +122,14 @@ impl Pane for AlbumArtPane {
             }
             UiEvent::Displayed if is_visible => {
                 if is_visible && !self.is_modal_open {
-                    self.album_art.show_current()?;
+                    self.album_art.show_current(ctx)?;
                 }
             }
             UiEvent::ModalOpened if is_visible => {
+                if !self.is_modal_open {
+                    self.album_art.hide(ctx)?;
+                }
                 self.is_modal_open = true;
-                self.album_art.hide()?;
             }
             UiEvent::ModalClosed if is_visible => {
                 self.is_modal_open = false;
@@ -140,16 +139,21 @@ impl Pane for AlbumArtPane {
                     self.before_show(ctx)?;
                     return Ok(());
                 }
-                self.album_art.show_current()?;
+                self.album_art.show_current(ctx)?;
             }
             UiEvent::ConfigChanged => {
-                self.album_art.set_config(&ctx.config)?;
                 if is_visible && !self.is_modal_open {
-                    self.album_art.show_current()?;
+                    self.album_art.show_current(ctx)?;
                 }
             }
             UiEvent::Exit => {
                 self.album_art.cleanup()?;
+            }
+            UiEvent::ImageEncoded { data } => {
+                self.album_art.display(std::mem::take(data), ctx)?;
+            }
+            UiEvent::ImageEncodeFailed { err } => {
+                self.album_art.image_processing_failed(err, ctx)?;
             }
             _ => {}
         }
@@ -171,10 +175,10 @@ mod tests {
         config::{Config, album_art::ImageMethod, tabs::PaneType},
         mpd::commands::{Song, State},
         shared::{
-            events::{ClientRequest, WorkRequest},
+            events::{AppEvent, ClientRequest, WorkRequest},
             mpd_query::MpdQuery,
         },
-        tests::fixtures::{client_request_channel, ctx, work_request_channel},
+        tests::fixtures::{app_event_channel, client_request_channel, ctx, work_request_channel},
         ui::{
             UiEvent,
             panes::{Pane, album_art::ALBUM_ART},
@@ -187,11 +191,12 @@ mod tests {
     fn searches_for_album_art_before_show(
         #[case] method: ImageMethod,
         #[case] should_search: bool,
+        app_event_channel: (Sender<AppEvent>, Receiver<AppEvent>),
         work_request_channel: (Sender<WorkRequest>, Receiver<WorkRequest>),
         client_request_channel: (Sender<ClientRequest>, Receiver<ClientRequest>),
     ) {
         let rx = client_request_channel.1.clone();
-        let mut ctx = ctx(work_request_channel, client_request_channel);
+        let mut ctx = ctx(app_event_channel, work_request_channel, client_request_channel);
         let selected_song_id = 333;
         let mut config = Config::default();
         config.album_art.method = method;
@@ -227,11 +232,12 @@ mod tests {
     fn searches_for_album_art_on_event(
         #[case] method: ImageMethod,
         #[case] should_search: bool,
+        app_event_channel: (Sender<AppEvent>, Receiver<AppEvent>),
         work_request_channel: (Sender<WorkRequest>, Receiver<WorkRequest>),
         client_request_channel: (Sender<ClientRequest>, Receiver<ClientRequest>),
     ) {
         let rx = client_request_channel.1.clone();
-        let mut ctx = ctx(work_request_channel, client_request_channel);
+        let mut ctx = ctx(app_event_channel, work_request_channel, client_request_channel);
         let selected_song_id = 333;
         let mut config = Config::default();
         config.album_art.method = method;

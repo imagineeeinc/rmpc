@@ -6,7 +6,7 @@ mod remote_ipc_tests {
     use crate::{
         AppEvent,
         WorkRequest,
-        config::{Config, ConfigFile, cli::RemoteCmd},
+        config::{Config, cli::RemoteCmd},
         shared::ipc::{
             SocketCommand,
             SocketCommandExecute,
@@ -18,9 +18,7 @@ mod remote_ipc_tests {
     fn setup_test() -> (Sender<AppEvent>, Receiver<AppEvent>, Sender<WorkRequest>, Config) {
         let (event_tx, event_rx) = channel::unbounded();
         let (work_tx, _work_rx) = channel::unbounded();
-        let config = ConfigFile::default()
-            .into_config(None, None, None, None, true)
-            .expect("Failed to create test config");
+        let config = Config::default();
         (event_tx, event_rx, work_tx, config)
     }
 
@@ -104,15 +102,6 @@ mod remote_ipc_tests {
         // Checking that a RemoteSwitchTab event was sent (since validation happens in
         // main event loop)
         expect_remote_switch_tab(&event_rx, "NonExistentTab");
-    }
-
-    #[test]
-    fn test_invalid_keybind() {
-        let (event_tx, _event_rx, work_tx, config) = setup_test();
-        let keybind_cmd = KeybindCommand { key: "invalid_key_format".to_string() };
-
-        let result = keybind_cmd.execute(&event_tx, &work_tx, ipc_stream(), &config);
-        assert!(result.is_err());
     }
 
     #[test]

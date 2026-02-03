@@ -30,6 +30,7 @@ use crate::mpd::{
     },
     errors::MpdError,
     mpd_client::{
+        AlbumArtOrder,
         Filter,
         MpdClient,
         SaveMode,
@@ -154,10 +155,7 @@ impl MpdClient for TestMpdClient {
         todo!("Not yet implemented")
     }
 
-    fn enter_idle(&mut self) -> MpdResult<()>
-    where
-        Self: SocketClient,
-    {
+    fn enter_idle(&mut self, _subsystem: Option<IdleEvent>) -> MpdResult<()> {
         todo!("Not yet implemented")
     }
 
@@ -306,6 +304,14 @@ impl MpdClient for TestMpdClient {
         self.current_song_idx = None;
         self.status.state = crate::mpd::commands::State::Stop;
         Ok(())
+    }
+
+    fn swap_position(&mut self, _song1: usize, _song2: usize) -> MpdResult<()> {
+        todo!("Not yet implemented")
+    }
+
+    fn swap_id(&mut self, _id1: u32, _id2: u32) -> MpdResult<()> {
+        todo!("Not yet implemented")
     }
 
     fn delete_id(&mut self, _id: u32) -> MpdResult<()> {
@@ -581,7 +587,7 @@ impl MpdClient for TestMpdClient {
         todo!("Not yet implemented")
     }
 
-    fn find_album_art(&mut self, _path: &str) -> MpdResult<Option<Vec<u8>>> {
+    fn find_album_art(&mut self, _path: &str, _order: AlbumArtOrder) -> MpdResult<Option<Vec<u8>>> {
         self.calls.entry("find_album_art".to_string()).or_default().add_assign(1);
         Ok(Some(Vec::new()))
     }
